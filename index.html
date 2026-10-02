@@ -252,6 +252,7 @@ body.glass .sunin,body.glass #find button{background:color-mix(in srgb,var(--ink
       <button data-scene="photo" class="ph" title="Use your own photo">Photo…</button>
     </div></div>
     <div class="lrow"><span>Sun</span><input class="sunin" id="sunIn" list="cities" placeholder="City, or latitude, longitude" aria-label="City for sunrise and sunset" autocomplete="off"><datalist id="cities"></datalist></div>
+    <div class="lrow"><span>Line</span><div class="opt"><button data-marks="off" title="No sunrise or sunset line">Off</button><button data-marks="hover" title="Line and time fade in near the pointer">Near pointer</button><button data-marks="on" title="Line and time always shown">Always</button></div></div>
     <div class="lrow"><span>Sound</span><div class="opt"><button data-sound="on">On</button><button data-sound="off">Off</button></div></div>
   </div>
   <input type="file" id="bgFile" accept="image/*" hidden>
@@ -283,6 +284,7 @@ body.glass .sunin,body.glass #find button{background:color-mix(in srgb,var(--ink
         <li>Tap an event to rename it, move it to another calendar, pin it to the countdown, or delete it.</li>
         <li><kbd>⌘Z</kbd> undoes. With a mouse, hold <kbd>Space</kbd> and drag to pan.</li>
         <li>Hold <kbd>F</kbd> for the lens. Press <kbd>/</kbd> to search.</li>
+        <li>The Line setting controls the sunrise and sunset line: off, fading in near the pointer, or always shown.</li>
         <li>Edits are saved in this browser only. Re-importing a calendar replaces changes made to that calendar's events here.</li>
       </ul>
     </details>
@@ -515,7 +517,7 @@ function titleEmoji(t){ t=(t||"").toLowerCase(); for(const [re,e] of EV) if(re.t
 let cals = [];   // {id,name,source,color:[h,s,l],on,sample,masters,occ,count,css}
 let dayMap = new Map(), allDay = [];
 const v = {x0:0, xs:100, y0:7, ys:40};
-const ui = {look:"glass", shape:"drum", scene:"sky", sound:true, free:0};
+const ui = {look:"glass", shape:"drum", scene:"sky", sound:true, free:0, sunMarks:"hover"};
 const SCENES = {
   aurora:{l:["#C8F3E2","#D4E6FB","#EAD9F8"], d:["#062B22","#0A2542","#2B1542"]},
   sunset:{l:["#FFE3BA","#FFC4B2","#E8BAE2"], d:["#40260F","#4C1E2C","#291741"]},
@@ -527,6 +529,7 @@ let bgImg=null, dayLoad=new Map();
 let jx=0, jy=0, jvx=0, jvy=0, prevCx=null, prevCy=null, rub=0, rubV=0;
 let hoverK=0, hoverO=null, hoverRect=null, sel=null, selRect=null, tapO=null, tapT=0, NOW=0, POPDY=0;
 // editing, lens, search
+let sunPt=null, sunK=[0,0], sunX=0, sunD=0;   // sunrise/sunset line: pointer position, fade amounts, last place it was shown
 let drag=null, lensOn=false, lensD=0, lensV=0, lensF=0, hitM=null, matches=[], findIdx=-1, ring=null;
 const rubber=x=>(1-1/(x*0.55/140+1))*140;
 const RM = matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -594,6 +597,7 @@ function load(){
     if(s.ui){ if(["classic","glass"].includes(s.ui.look)) ui.look=s.ui.look; if(["flat","drum","wheel","globe"].includes(s.ui.shape)) ui.shape=s.ui.shape;
       if(["sky","aurora","sunset","ocean","meadow","photo"].includes(s.ui.scene)) ui.scene=s.ui.scene; if(typeof s.ui.sound==="boolean") ui.sound=s.ui.sound;
       if("sun" in s.ui) ui.sun=(s.ui.sun&&isFinite(s.ui.sun.lat)&&isFinite(s.ui.sun.lon))?s.ui.sun:null;
+      if(["off","hover","on"].includes(s.ui.sunMarks)) ui.sunMarks=s.ui.sunMarks;
       if([0,.5,1,2].includes(s.ui.free)) ui.free=s.ui.free; if(typeof s.ui.lastCal==="string") ui.lastCal=s.ui.lastCal; }
     return cals.length>0;
   }catch(e){ return false; }
@@ -1022,12 +1026,40 @@ function draw(now){
       }
       ctx.setTransform(dpr,0,0,dpr,0,0);
     }
-    ctx.font=FONT(700,10); ctx.textAlign="left"; ctx.textBaseline="middle"; ctx.fillStyle=T.ink; ctx.globalAlpha=.8;
-    const lab=(d,x,long)=>{ const sn=sunOf(d); if(isNaN(sn[0])) return; ctx.fillText((long?"Sunrise ":"↑ ")+fmtH(sn[0]),x,Y(sn[0])+.5); ctx.fillText((long?"Sunset ":"↓ ")+fmtH(sn[1]),x,Y(sn[1])+.5); };
-    let any=false;
-    if(xs>=24) for(let d=dA; d<=dB; d++){ const xa=X(d); if(X(d+1)-xa>=84){ lab(d,Math.max(xa,LW)+6,false); any=true; } }
-    if(!any) lab(Math.ceil(v.x0),LW+6,true);
-    ctx.globalAlpha=1; ctx.lineWidth=1;
+    // the crisp line and its time: always, only near the pointer, or never
+    const mode=ui.sunMarks, pt=sunPt&&sunPt.x>LW&&sunPt.y>top?sunPt:null;
+    if(pt){ sunX=pt.x; sunD=Math.floor(dayAt(pt.x)); }
+    const psn=sunOf(sunD);
+    ctx.textBaseline="alphabetic";
+    for(const [i,c] of [[0,"250,160,40"],[1,"232,84,70"]]){
+      let a=mode==="on"?1:0;
+      if(mode==="hover"){   // fades in as the pointer nears the line, and back out as it leaves
+        const tg=pt&&!isNaN(psn[i])?Math.max(0,Math.min(1,1.25-Math.abs(pt.y-Y(psn[i]))/64)):0;
+        if(RM||Math.abs(tg-sunK[i])<0.01) sunK[i]=tg; else { sunK[i]+=(tg-sunK[i])*0.16; animating=true; }
+        a=sunK[i];
+      }
+      if(a<0.02) continue;
+      if(mode==="hover"){ const g=ctx.createLinearGradient(sunX-260,0,sunX+260,0); g.addColorStop(0,`rgba(${c},0)`); g.addColorStop(.5,`rgba(${c},${a})`); g.addColorStop(1,`rgba(${c},0)`); ctx.strokeStyle=g; }
+      else ctx.strokeStyle=`rgba(${c},.95)`;
+      ctx.lineWidth=1.5; ctx.lineJoin="round"; ctx.beginPath(); let pen=false;
+      for(let d=dA; d<=dB; d+=step){ const hh=sunOf(d)[i]; if(isNaN(hh)){ pen=false; continue; } const y=Y(hh), xa=X(d); if(pen) ctx.lineTo(xa,y); else { ctx.moveTo(xa,y); pen=true; } ctx.lineTo(X(d+step),y); }
+      ctx.stroke();
+      ctx.fillStyle=T.ink;
+      if(mode==="hover"){
+        if(isNaN(psn[i])) continue;
+        const right=sunX>W-150;
+        ctx.font=FONT(700,11); ctx.textAlign=right?"right":"left"; ctx.globalAlpha=a*.9;
+        ctx.fillText((i?"Sunset ":"Sunrise ")+fmtH(psn[i]),sunX+(right?-12:12),Y(psn[i])-7);
+      } else {
+        ctx.font=FONT(700,10); ctx.textAlign="left"; ctx.globalAlpha=.8;
+        const lab=(d,x,long)=>{ const h=sunOf(d)[i]; if(!isNaN(h)) ctx.fillText((long?(i?"Sunset ":"Sunrise "):(i?"↓ ":"↑ "))+fmtH(h),x,Y(h)-5); };
+        let any=false;
+        if(xs>=24) for(let d=dA; d<=dB; d++){ const xa=X(d); if(X(d+1)-xa>=84){ lab(d,Math.max(xa,LW)+6,false); any=true; } }
+        if(!any) lab(Math.ceil(v.x0),LW+6,true);
+      }
+      ctx.globalAlpha=1;
+    }
+    ctx.lineWidth=1;
   }
   ctx.restore();
 
@@ -1435,6 +1467,7 @@ cv.addEventListener("pointerdown",e=>{
 });
 cv.addEventListener("pointermove",e=>{
   const r=cv.getBoundingClientRect(), x=e.clientX-r.left, y=e.clientY-r.top;
+  if(ui.sun&&ui.sunMarks==="hover"){ sunPt={x,y}; kick(); }
   if(!ptrs.has(e.pointerId)){
     if(e.pointerType==="mouse"){
       mouse={x,y};
@@ -1480,6 +1513,7 @@ function endPtr(e){
   if(!ptrs.has(e.pointerId)) return;
   const r=cv.getBoundingClientRect(), x=e.clientX-r.left, y=e.clientY-r.top;
   const g=gesture; ptrs.delete(e.pointerId); cv.classList.remove("grabbing"); clearTimeout(lpT);
+  if(e.pointerType==="touch") sunPt=null;
   if(g && g.mode==="edit"){
     if(e.type==="pointerup" && (g.moved || (g.armed && g.kind.startsWith("create")))){
       if(!drag) updateDrag(x,y);
@@ -1510,7 +1544,7 @@ function endPtr(e){
 }
 cv.addEventListener("pointerup",endPtr);
 cv.addEventListener("pointercancel",endPtr);
-cv.addEventListener("pointerleave",e=>{ if(e.pointerType==="mouse"&&hover&&!ptrs.size){ hover=null; kick(); } });
+cv.addEventListener("pointerleave",e=>{ if(sunPt){ sunPt=null; kick(); } if(e.pointerType==="mouse"&&hover&&!ptrs.size){ hover=null; kick(); } });
 function hitEntry(x,y){ for(let i=hits.length-1;i>=0;i--){ const h=hits[i]; if(x>=h.x-1&&x<=h.x+h.w+1&&y>=h.y-1&&y<=h.y+h.h+1) return h; } return null; }
 
 /* ---------- popover ---------- */
@@ -1687,6 +1721,7 @@ function applyUi(){
   document.querySelectorAll("[data-shape]").forEach(b=>b.setAttribute("aria-pressed",b.dataset.shape===ui.shape));
   document.querySelectorAll("[data-scene]").forEach(b=>b.setAttribute("aria-pressed",ui.look==="glass"&&b.dataset.scene===ui.scene));
   document.querySelectorAll("[data-sound]").forEach(b=>b.setAttribute("aria-pressed",(b.dataset.sound==="on")===ui.sound));
+  document.querySelectorAll("[data-marks]").forEach(b=>b.setAttribute("aria-pressed",b.dataset.marks===ui.sunMarks));
   $("#shapeBtn").textContent=cap(ui.shape);
   $("#freeBtn").textContent=ui.free?`Free ${ui.free<1?"30m":ui.free+"h"}+`:"Free";
   $("#freeBtn").setAttribute("aria-pressed",!!ui.free);
@@ -1718,6 +1753,7 @@ function setSun(text){
   else toast("Sun times off");
 }
 $("#sunIn").addEventListener("change",e=>setSun(e.target.value));
+document.querySelectorAll("[data-marks]").forEach(b=>b.onclick=()=>{ setUi("sunMarks",b.dataset.marks); sfx.snap(); if(!ui.sun) toast("Set a city in the Sun field to see sunrise and sunset"); });
 $("#sunIn").addEventListener("keydown",e=>{ if(e.key==="Enter") e.target.blur(); });
 document.querySelectorAll("[data-scene]").forEach(b=>b.onclick=()=>{
   const sc=b.dataset.scene;
