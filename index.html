@@ -552,16 +552,34 @@ function blip(f,d,type,vol,to){
     o.connect(g); g.connect(actx.destination); o.start(t); o.stop(t+d+0.02);
   }catch(e){}
 }
+// every sound is a short low sine that drops (or rises) in pitch, optionally with a puff of filtered noise for the "thock"
+let noiseBuf=null;
+function thock(f0,f1,dur,vol,nz){
+  if(!ui.sound||!actx||actx.state!=="running") return;
+  try{
+    const t=actx.currentTime, o=actx.createOscillator(), g=actx.createGain();
+    o.type="sine"; o.frequency.setValueAtTime(f0,t); o.frequency.exponentialRampToValueAtTime(f1,t+dur);
+    g.gain.setValueAtTime(0.0001,t); g.gain.exponentialRampToValueAtTime(vol,t+0.004); g.gain.exponentialRampToValueAtTime(0.0001,t+dur);
+    o.connect(g); g.connect(actx.destination); o.start(t); o.stop(t+dur+0.02);
+    if(nz){
+      if(!noiseBuf){ noiseBuf=actx.createBuffer(1,Math.floor(actx.sampleRate*0.05),actx.sampleRate); const d=noiseBuf.getChannelData(0); for(let i=0;i<d.length;i++) d[i]=Math.random()*2-1; }
+      const src=actx.createBufferSource(), f=actx.createBiquadFilter(), ng=actx.createGain();
+      src.buffer=noiseBuf; f.type="lowpass"; f.frequency.value=900; f.Q.value=0.7;
+      ng.gain.setValueAtTime(nz,t); ng.gain.exponentialRampToValueAtTime(0.0001,t+0.022);
+      src.connect(f); f.connect(ng); ng.connect(actx.destination); src.start(t); src.stop(t+0.03);
+    }
+  }catch(e){}
+}
 const sfxLast={};
-function play(name,gap,f,d,type,vol,to){ const t=performance.now(); if(t-(sfxLast[name]||0)<gap) return; sfxLast[name]=t; blip(f,d,type,vol,to); }
+function play(name,gap,f0,f1,dur,vol,nz){ const t=performance.now(); if(t-(sfxLast[name]||0)<gap) return; sfxLast[name]=t; thock(f0,f1,dur,vol,nz); }
 const sfx={
-  tick:()=>play("tick",38,1450+Math.random()*140,.028,"triangle",.03),
-  tock:()=>play("tick",38,760,.06,"triangle",.055),
-  snap:()=>play("snap",80,430,.13,"sine",.07,780),
-  tap:()=>play("tap",80,640,.11,"sine",.07,430),
-  on:()=>play("on",70,480,.1,"sine",.06,840),
-  off:()=>play("off",70,640,.1,"sine",.05,360),
-  done:()=>{ blip(523,.13,"sine",.07); setTimeout(()=>blip(659,.13,"sine",.07),110); setTimeout(()=>blip(784,.22,"sine",.07),220); }
+  tick:()=>play("tick",38,290+Math.random()*30,150,.05,.06,.035),   // a day rolls past: muted thock
+  tock:()=>play("tick",38,220,110,.07,.075,.04),                   // a month boundary: a little deeper
+  tap:()=>play("tap",80,480,240,.045,.05,.02),                     // tapping an event: soft pop
+  snap:()=>play("snap",80,330,450,.07,.04,0),
+  on:()=>play("on",70,370,510,.06,.04,0),
+  off:()=>play("off",70,420,280,.06,.04,0),
+  done:()=>{ thock(392,392,.14,.04,0); setTimeout(()=>thock(494,494,.14,.04,0),110); setTimeout(()=>thock(587,587,.22,.04,0),220); }
 };
 const buzz=ms=>{ try{ if(ui.sound&&navigator.vibrate) navigator.vibrate(ms); }catch(e){} };
 document.addEventListener("pointerdown",unlockAudio,true);
@@ -989,17 +1007,23 @@ function draw(now){
     }
     ctx.lineWidth=1;
   }
-  // sunrise and sunset lines
+  // sunrise and sunset: a soft band of light about an hour tall, gold for sunrise and coral for sunset
   if(ui.sun){
-    const step=Math.max(1,Math.ceil(2/xs));
-    ctx.lineWidth=1.6; ctx.lineJoin="round"; ctx.globalAlpha=.9;
-    for(const [i,col] of [[0,"#F2A51E"],[1,"#E8603C"]]){
-      ctx.strokeStyle=col; ctx.beginPath(); let pen=false;
-      for(let d=dA; d<=dB; d+=step){ const hh=sunOf(d)[i]; if(isNaN(hh)){ pen=false; continue; } const y=Y(hh), xa=X(d); if(pen) ctx.lineTo(xa,y); else { ctx.moveTo(xa,y); pen=true; } ctx.lineTo(X(d+step),y); }
-      ctx.stroke();
+    const step=Math.max(1,Math.ceil(2/xs)), B=0.55, pk=T.dark?.5:.58;
+    for(const [i,c] of [[0,"255,180,84"],[1,"240,98,86"]]){
+      const g=ctx.createLinearGradient(0,-1,0,1);
+      g.addColorStop(0,`rgba(${c},0)`); g.addColorStop(.3,`rgba(${c},${pk*.35})`); g.addColorStop(.5,`rgba(${c},${pk})`); g.addColorStop(.7,`rgba(${c},${pk*.35})`); g.addColorStop(1,`rgba(${c},0)`);
+      ctx.fillStyle=g;
+      for(let d=dA; d<=dB; d+=step){
+        const hh=sunOf(d)[i]; if(isNaN(hh)) continue;
+        const ya=Y(hh-B), yb=Y(hh+B), half=(yb-ya)/2; if(half<0.5||yb<top||ya>H) continue;
+        const x=X(d), w=X(d+step)-x+0.7;
+        ctx.setTransform(dpr,0,0,dpr*half,0,dpr*(ya+half)); ctx.fillRect(x,-1,w,2);   // the gradient is drawn once and stretched to each day's band
+      }
+      ctx.setTransform(dpr,0,0,dpr,0,0);
     }
-    ctx.font=FONT(700,10); ctx.textAlign="left"; ctx.textBaseline="alphabetic"; ctx.fillStyle=T.ink; ctx.globalAlpha=.78;
-    const lab=(d,x,long)=>{ const sn=sunOf(d); if(isNaN(sn[0])) return; ctx.fillText((long?"Sunrise ":"↑ ")+fmtH(sn[0]),x,Y(sn[0])-4); ctx.fillText((long?"Sunset ":"↓ ")+fmtH(sn[1]),x,Y(sn[1])-4); };
+    ctx.font=FONT(700,10); ctx.textAlign="left"; ctx.textBaseline="middle"; ctx.fillStyle=T.ink; ctx.globalAlpha=.8;
+    const lab=(d,x,long)=>{ const sn=sunOf(d); if(isNaN(sn[0])) return; ctx.fillText((long?"Sunrise ":"↑ ")+fmtH(sn[0]),x,Y(sn[0])+.5); ctx.fillText((long?"Sunset ":"↓ ")+fmtH(sn[1]),x,Y(sn[1])+.5); };
     let any=false;
     if(xs>=24) for(let d=dA; d<=dB; d++){ const xa=X(d); if(X(d+1)-xa>=84){ lab(d,Math.max(xa,LW)+6,false); any=true; } }
     if(!any) lab(Math.ceil(v.x0),LW+6,true);
